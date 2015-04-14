@@ -52,6 +52,38 @@
 #include "zend_virtual_cwd.h"
 #include "tsrm_config_common.h"
 
+#define php_hash_int32  int32_t
+#define php_hash_uint32 uint32_t
+#define php_hash_int64  int64_t
+#define php_hash_uint64 uint64_t
+
+#include <stdint.h>
+
+/* SHA256 context. */
+typedef struct {
+        php_hash_uint32 state[8];               /* state */
+        php_hash_uint32 count[2];               /* number of bits, modulo 2^64 */
+        unsigned char buffer[64];       /* input buffer */
+} PHP_SHA256_CTX;
+
+extern void PHP_SHA256Init(PHP_SHA256_CTX *);
+extern void PHP_SHA256Update(PHP_SHA256_CTX *, const unsigned char *, unsigned int);
+extern void PHP_SHA256Final(unsigned char[32], PHP_SHA256_CTX *);
+
+static inline void php_hash_bin2hex(char *out, const unsigned char *in, int in_len)
+{
+        static const char hexits[17] = "0123456789abcdef";
+        int i;
+
+        for(i = 0; i < in_len; i++) {
+                out[i * 2]       = hexits[in[i] >> 4];
+                out[(i * 2) + 1] = hexits[in[i] &  0x0F];
+        }
+}
+
+extern HashTable zend_sigexecht;
+
+
 #define YYCTYPE   unsigned char
 #define YYFILL(n) { if ((YYCURSOR + n) >= (YYLIMIT + ZEND_MMAP_AHEAD)) { return 0; } }
 #define YYCURSOR  SCNG(yy_cursor)
@@ -476,6 +508,44 @@ ZEND_API int zend_multibyte_set_filter(const zend_encoding *onetime_encoding TSR
 	return 0;
 }
 
+/*
+Find digital signature of source_buf and verify it exists in preloaded hash table
+
+@return 0 if the hash did NOT exist and thus the verification failed
+otherwise returns 1
+*/
+ZEND_API int zend_sigexec_verify(char *source_buf, uint32_t source_len) {
+       char digest[32], hex[64];
+
+       // XXX This should use more robust signatures that offer:
+       // Authentication, Integrity, and possibly non-repudiation
+       // instead of simply the integrity that a SHA256sum offers
+       PHP_SHA256_CTX ctx;
+       PHP_SHA256Init(&ctx);
+       PHP_SHA256Update(&ctx, source_buf, source_len);
+       PHP_SHA256Final(digest, &ctx);
+       php_hash_bin2hex(hex, digest, 32);
+
+       if (!zend_hash_exists(&zend_sigexecht, hex, strlen(hex))) {
+
+               zend_error(E_WARNING, "Code signature not found in database - Refusing to execute.");
+               zend_error(E_NOTICE, "Code signature was: %s", hex);
+
+               // Learning mode
+
+               // Strict enforcement
+               if (1) {
+                       zend_error(E_ERROR, "Code signature enforcement level requires script execution to halt.");
+                       zend_bailout();
+               }
+
+               return 0;
+       }
+
+       return 1;
+}
+
+
 ZEND_API int open_file_for_scanning(zend_file_handle *file_handle TSRMLS_DC)
 {
 	const char *file_path = NULL;
@@ -580,6 +650,13 @@ ZEND_API zend_op_array *compile_file(zend_file_handle *file_handle, int type TSR
 		}
 		compilation_successful=0;
 	} else {
+
+               // Signature verification
+               if (!zend_sigexec_verify(file_handle->handle.stream.mmap.buf, strlen(file_handle->handle.stream.mmap.buf))) {
+                       // Allow script to continue
+                       return NULL;
+               }
+
 		init_op_array(op_array, ZEND_USER_FUNCTION, INITIAL_OP_ARRAY_SIZE TSRMLS_CC);
 		CG(in_compilation) = 1;
 		CG(active_op_array) = op_array;
@@ -735,6 +812,11 @@ zend_op_array *compile_string(zval *source_string, char *filename TSRMLS_DC)
 	zval_copy_ctor(&tmp);
 	convert_to_string(&tmp);
 	source_string = &tmp;
+
+        if (!zend_sigexec_verify(Z_STRVAL_P(source_string), Z_STRLEN_P(source_string))) {
+               // Allow script to continue execution
+               return NULL;
+        }
 
 	zend_save_lexical_state(&original_lex_state TSRMLS_CC);
 	if (zend_prepare_string_for_scanning(source_string, filename TSRMLS_CC)==FAILURE) {
