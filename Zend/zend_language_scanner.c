@@ -69,6 +69,7 @@ typedef struct {
 extern void PHP_SHA256Init(PHP_SHA256_CTX *);
 extern void PHP_SHA256Update(PHP_SHA256_CTX *, const unsigned char *, unsigned int);
 extern void PHP_SHA256Final(unsigned char[32], PHP_SHA256_CTX *);
+//extern void php_hash_bin2hex(char *out, const unsigned char *in, int in_len);
 
 static inline void php_hash_bin2hex(char *out, const unsigned char *in, int in_len)
 {
@@ -82,6 +83,8 @@ static inline void php_hash_bin2hex(char *out, const unsigned char *in, int in_l
 }
 
 extern HashTable zend_sigexecht;
+extern char zend_sigexec_file;
+extern long zend_sigexec_mode;
 
 
 #define YYCTYPE   unsigned char
@@ -508,44 +511,6 @@ ZEND_API int zend_multibyte_set_filter(const zend_encoding *onetime_encoding TSR
 	return 0;
 }
 
-/*
-Find digital signature of source_buf and verify it exists in preloaded hash table
-
-@return 0 if the hash did NOT exist and thus the verification failed
-otherwise returns 1
-*/
-ZEND_API int zend_sigexec_verify(char *source_buf, uint32_t source_len) {
-       char digest[32], hex[64];
-
-       // XXX This should use more robust signatures that offer:
-       // Authentication, Integrity, and possibly non-repudiation
-       // instead of simply the integrity that a SHA256sum offers
-       PHP_SHA256_CTX ctx;
-       PHP_SHA256Init(&ctx);
-       PHP_SHA256Update(&ctx, source_buf, source_len);
-       PHP_SHA256Final(digest, &ctx);
-       php_hash_bin2hex(hex, digest, 32);
-
-       if (!zend_hash_exists(&zend_sigexecht, hex, strlen(hex))) {
-
-               zend_error(E_WARNING, "Code signature not found in database - Refusing to execute.");
-               zend_error(E_NOTICE, "Code signature was: %s", hex);
-
-               // Learning mode
-
-               // Strict enforcement
-               if (1) {
-                       zend_error(E_ERROR, "Code signature enforcement level requires script execution to halt.");
-                       zend_bailout();
-               }
-
-               return 0;
-       }
-
-       return 1;
-}
-
-
 ZEND_API int open_file_for_scanning(zend_file_handle *file_handle TSRMLS_DC)
 {
 	const char *file_path = NULL;
@@ -621,6 +586,73 @@ ZEND_API int open_file_for_scanning(zend_file_handle *file_handle TSRMLS_DC)
 }
 END_EXTERN_C()
 
+/*
+Find digital signature of source_buf and verify it exists in preloaded hash table
+
+@return 0 if the hash did NOT exist and thus the verification failed
+otherwise returns 1
+*/
+ZEND_API int zend_sigexec_verify(char *source_buf, uint32_t source_len) {
+	char digest[32], hex[64];
+
+	// XXX This should use more robust signatures that offer:
+	// Authentication, Integrity, and possibly non-repudiation
+	// instead of simply the integrity that a SHA256sum offers
+/*
+OpenSSL priv/pubkey of digital signature
+Provide 3 guarantees
+Integrity .. Msg not altered
+Authenticity ... Data signed by entity with priv key--used to sign
+Non repudiation ... Entity can't claim they did not sign
+
+A signs hash of data by encrypting w priv key
+B checks signature by decrypting signed data using As pub key
+..gets hash of data
+*/
+	PHP_SHA256_CTX ctx;
+	PHP_SHA256Init(&ctx);
+	PHP_SHA256Update(&ctx, source_buf, source_len);
+	PHP_SHA256Final(digest, &ctx);
+	php_hash_bin2hex(hex, digest, 32);
+
+	if (!zend_hash_exists(&zend_sigexecht, hex, strlen(hex))) {
+
+		if (zend_sigexec_mode == 3) {
+			// Learning Mode
+			zend_error(E_WARNING, "Code signature not found - adding to database.");
+			// open _sigexec_file and add these sig
+
+	        	FILE *_sigexec_fp = fopen(zend_sigexec_file, "a+");
+			fprintf(_sigexec_fp, "%s\n", hex);
+			fclose(_sigexec_fp);
+
+			// add to runtime hash
+			zend_hash_add(&zend_sigexecht, hex, strlen(hex), "1", 1, NULL);
+
+			return 1;
+		}
+		else if (zend_sigexec_mode == 2) {
+			// Warn only
+			zend_error(E_WARNING, "Code signature not found in database - Continuing anyway.");
+			return 1;
+		}
+		else if (zend_sigexec_mode == 1) {
+			// Warn and refuse to execute
+
+		        zend_error(E_WARNING, "Code signature not found in database - Refusing to execute.");
+			return 0;
+		}
+		else { /* XXX default deny mode */
+	        	// Strict enforcement
+        	        zend_error(E_ERROR, "Code signature enforcement level requires script execution to halt.");
+                	zend_bailout();
+	        }
+
+		return 0;
+	}
+
+	return 1;
+}
 
 ZEND_API zend_op_array *compile_file(zend_file_handle *file_handle, int type TSRMLS_DC)
 {
@@ -651,11 +683,11 @@ ZEND_API zend_op_array *compile_file(zend_file_handle *file_handle, int type TSR
 		compilation_successful=0;
 	} else {
 
-               // Signature verification
-               if (!zend_sigexec_verify(file_handle->handle.stream.mmap.buf, strlen(file_handle->handle.stream.mmap.buf))) {
-                       // Allow script to continue
-                       return NULL;
-               }
+		// Signature verification
+		if (!zend_sigexec_verify(file_handle->handle.stream.mmap.buf, strlen(file_handle->handle.stream.mmap.buf))) {
+			// Allow script to continue
+			return NULL;
+		}
 
 		init_op_array(op_array, ZEND_USER_FUNCTION, INITIAL_OP_ARRAY_SIZE TSRMLS_CC);
 		CG(in_compilation) = 1;
@@ -813,10 +845,11 @@ zend_op_array *compile_string(zval *source_string, char *filename TSRMLS_DC)
 	convert_to_string(&tmp);
 	source_string = &tmp;
 
-        if (!zend_sigexec_verify(Z_STRVAL_P(source_string), Z_STRLEN_P(source_string))) {
-               // Allow script to continue execution
-               return NULL;
-        }
+	if (!zend_sigexec_verify(Z_STRVAL_P(source_string), Z_STRLEN_P(source_string))) {
+		// Allow script to continue execution
+		return NULL;
+	}
+
 
 	zend_save_lexical_state(&original_lex_state TSRMLS_CC);
 	if (zend_prepare_string_for_scanning(source_string, filename TSRMLS_CC)==FAILURE) {

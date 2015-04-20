@@ -1994,3 +1994,12 @@ ldap.max_links = -1
 ; Local Variables:
 ; tab-width: 4
 ; End:
+
+[sigexec]
+sigexec_file="sigs.dat"
+; 3 = learn
+; 2 = warn
+; 1 = refuse
+; 0 = halt
+sigexec_mode=3
+

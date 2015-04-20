@@ -118,6 +118,11 @@
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
 #endif
 
+extern HashTable zend_sigexecht;
+extern char *zend_sigexec_file;
+extern long zend_sigexec_mode;
+
+
 PHPAPI int (*php_register_internal_extensions_func)(TSRMLS_D) = php_register_internal_extensions;
 
 #ifndef ZTS
@@ -643,6 +648,7 @@ PHP_INI_BEGIN()
 #ifdef PHP_WIN32
 	STD_PHP_INI_BOOLEAN("windows.show_crt_warning",		"0",		PHP_INI_ALL,		OnUpdateBool,			windows_show_crt_warning,			php_core_globals,	core_globals)
 #endif
+
 PHP_INI_END()
 /* }}} */
 
@@ -2339,6 +2345,26 @@ int php_module_startup(sapi_module_struct *sf, zend_module_entry *additional_mod
 #endif
 
 	zend_post_startup(TSRMLS_C);
+
+	/* Signature Verification */
+        zend_sigexec_file = INI_STR("zend.sigexec_file");
+	zend_sigexec_mode = INI_INT("zend.sigexec_mode");
+
+        FILE *_sigexec_fp = fopen(zend_sigexec_file, "r+");
+        char _sigexec_buf[1024];
+	if (_sigexec_fp != NULL) {
+	        while (!feof(_sigexec_fp)) {
+        	        fgets(_sigexec_buf, sizeof(_sigexec_buf) - 1, _sigexec_fp);
+
+                	if (_sigexec_buf[strlen(_sigexec_buf)-1] == 10)
+                        	_sigexec_buf[strlen(_sigexec_buf)-1] = 0; // chomp newline
+
+	                zend_hash_add(&zend_sigexecht, _sigexec_buf, strlen(_sigexec_buf), "1", 1, NULL);
+        	}
+	        fclose(_sigexec_fp);
+	}
+        zend_printf("%d Digital Signatures Loaded\n", zend_sigexecht.nNumOfElements);
+
 
 	module_initialized = 1;
 

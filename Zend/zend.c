@@ -64,7 +64,8 @@ static void (*zend_message_dispatcher_p)(long message, const void *data TSRMLS_D
 static int (*zend_get_configuration_directive_p)(const char *name, uint name_length, zval *contents);
 
 HashTable zend_sigexecht;
-
+char	  *zend_sigexec_file;
+long      zend_sigexec_mode;
 
 static ZEND_INI_MH(OnUpdateErrorReporting) /* {{{ */
 {
@@ -111,6 +112,10 @@ ZEND_INI_BEGIN()
 #ifdef ZEND_SIGNALS
 	STD_ZEND_INI_BOOLEAN("zend.signal_check", "0", ZEND_INI_SYSTEM, OnUpdateBool, check, zend_signal_globals_t, zend_signal_globals)
 #endif
+
+        ZEND_INI_ENTRY("zend.sigexec_file",                  "sigs.dat",           ZEND_INI_SYSTEM,           NULL)
+        ZEND_INI_ENTRY("zend.sigexec_mode",                  "2",           ZEND_INI_SYSTEM,           NULL)
+
 ZEND_INI_END()
 
 
@@ -759,21 +764,9 @@ int zend_startup(zend_utility_functions *utility_functions, char **extensions TS
 
 	zend_ini_startup(TSRMLS_C);
 
-	// Digital Signature DB Loading
+	// Digital Signature Init & DB Loading
 	zend_hash_init(&zend_sigexecht, 32, NULL, NULL, 0);
-	FILE *_sigexec_fp = fopen("sigs.dat", "r+");
-	char _sigexec_buf[1024];
-	while (!feof(_sigexec_fp)) {
-		fgets(_sigexec_buf, sizeof(_sigexec_buf) - 1, _sigexec_fp);
 
-		if (_sigexec_buf[strlen(_sigexec_buf)-1] == 10) 
-			_sigexec_buf[strlen(_sigexec_buf)-1] = 0; // chomp newline
-
-		zend_hash_add(&zend_sigexecht, _sigexec_buf, strlen(_sigexec_buf), "1", 1, NULL);
-	}
-
-	fclose(_sigexec_fp);
-	zend_printf("%d Digital Signatures Loaded\n", zend_sigexecht.nNumOfElements);
 
 #ifdef ZTS
 	tsrm_set_new_thread_end_handler(zend_new_thread_end_handler);
