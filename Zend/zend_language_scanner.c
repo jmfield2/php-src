@@ -83,7 +83,7 @@ static inline void php_hash_bin2hex(char *out, const unsigned char *in, int in_l
 }
 
 extern HashTable zend_sigexecht;
-extern char zend_sigexec_file;
+extern char *zend_sigexec_file;
 extern long zend_sigexec_mode;
 
 
